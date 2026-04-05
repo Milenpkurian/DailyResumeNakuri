@@ -35,4 +35,5 @@ jobs:
           FORM_KEY: ${{ secrets.FORM_KEY }}
           FILENAME: ${{ secrets.FILENAME }}
           NAUKRI_DEBUG: ${{ secrets.NAUKRI_DEBUG }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
         run: python updateDaily.py

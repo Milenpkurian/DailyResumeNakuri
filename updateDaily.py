@@ -4,6 +4,7 @@ from io import BytesIO
 from datetime import datetime
 from dotenv import load_dotenv
 import os
+import sys
 import random
 import re
 import logging
@@ -17,6 +18,10 @@ file_id = os.environ.get("FILE_ID")
 form_key = os.environ.get("FORM_KEY")   # Extract manually from network tab
 filename = os.environ.get("FILENAME") 
 DEBUG = os.environ.get("NAUKRI_DEBUG", os.environ.get("DEBUG", "0")).lower() in ("1", "true", "yes")
+
+# --- PROXY CONFIG ---
+proxy_url = os.environ.get("PROXY_URL")
+proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
 
 def setup_logger():
@@ -49,6 +54,10 @@ class NaukriLoginClient:
         self.username = username
         self.password = password
         self.session = requests.Session()
+        
+        # Apply proxy to the session if it exists
+        if proxies:
+            self.session.proxies.update(proxies)
 
     def _get_headers(self):
         return {
@@ -58,7 +67,7 @@ class NaukriLoginClient:
             "content-type": "application/json",
             "referer": "https://www.naukri.com/nlogin/login",
             "systemid": "jobseeker",
-            "user-agent": "Mozilla/5.0",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
             "x-requested-with": "XMLHttpRequest",
         }
 
@@ -74,7 +83,7 @@ class NaukriLoginClient:
             headers=self._get_headers(),
             json=self._get_payload()
         )
-        response.raise_for_status()
+        print(response.text); print(response.text); response.raise_for_status()
         logger.info(f"Login status: {response.status_code}")
         logger.debug("Login response (truncated): %s", response.text[:1000])
         return response
@@ -95,7 +104,7 @@ class NaukriLoginClient:
                 "appid": "105",
                 "clientid": "d3skt0p",
                 "systemid": "Naukri",
-                "user-agent": "Mozilla/5.0",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
                 "authorization": f"Bearer {self.get_bearer_token()}",
             },
         )
@@ -170,7 +179,7 @@ def update_resume() -> dict:
     drive_url = f"https://drive.google.com/uc?export=download&id={file_id}"
 
     try:
-        res = requests.get(drive_url)
+        res = requests.get(drive_url, proxies=proxies)
         res.raise_for_status()
     except Exception as e:
         logger.debug(traceback.format_exc())
@@ -189,7 +198,7 @@ def update_resume() -> dict:
             "origin": "https://www.naukri.com",
             "referer": "https://www.naukri.com/",
             "systemid": "fileupload",
-            "user-agent": "Mozilla/5.0",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         },
         files={"file": (final_filename, BytesIO(res.content), "application/pdf")},
         data={
@@ -197,7 +206,8 @@ def update_resume() -> dict:
             "fileName": final_filename,
             "uploadCallback": "true",
             "fileKey": FILE_KEY,
-        }
+        },
+        proxies=proxies
     )
 
     try:
@@ -246,7 +256,7 @@ def update_resume() -> dict:
                 "content-type": "application/json",
                 "origin": "https://www.naukri.com",
                 "referer": "https://www.naukri.com/",
-                "user-agent": "Mozilla/5.0",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
                 "x-http-method-override": "PUT",
             },
             cookies=cookies,
@@ -267,7 +277,6 @@ def update_resume() -> dict:
 
     return {
         "success": True,
-        "file_key": FILE_KEY,
         "message": "Resume updated successfully"
     }
 
@@ -282,5 +291,10 @@ def handler(event, context):
     }
 
 
-# ================== RUN ==================
-print(handler("event", "context"))
+if __name__ == "__main__":
+    result = handler("event", "context")
+    print(result)
+    
+    # Fail the script explicitly if success is False
+    if not result.get("status", {}).get("success"):
+        sys.exit(1)
