@@ -2,16 +2,37 @@ import requests
 import json
 from io import BytesIO
 from datetime import datetime
+from dotenv import load_dotenv
 import os
 import random
 import re
+import logging
+import traceback
 
+load_dotenv(override=True) 
 # ================== CONFIG (GLOBAL) ==================
-username = ""   # os.environ.get("USER")
-password = ""   # os.environ.get("PASS")
-file_id = ""    # Google Drive file ID
-form_key = ""   # Extract manually from network tab
-filename = ""   # Optional override (else auto-generated)
+username = os.environ.get("NAUKRI_USERNAME")
+password = os.environ.get("NAUKRI_PASSWORD")
+file_id = os.environ.get("FILE_ID")
+form_key = os.environ.get("FORM_KEY")   # Extract manually from network tab
+filename = os.environ.get("FILENAME") 
+DEBUG = os.environ.get("NAUKRI_DEBUG", os.environ.get("DEBUG", "0")).lower() in ("1", "true", "yes")
+
+
+def setup_logger():
+    level = logging.DEBUG if DEBUG else logging.INFO
+    logger = logging.getLogger("naukri_updater")
+    logger.setLevel(level)
+    if not logger.handlers:
+        ch = logging.StreamHandler()
+        ch.setLevel(level)
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
+    return logger
+
+
+logger = setup_logger()
 
 
 # ================== UTIL ==================
@@ -54,14 +75,17 @@ class NaukriLoginClient:
             json=self._get_payload()
         )
         response.raise_for_status()
-        print("Login status:", response.status_code)
+        logger.info(f"Login status: {response.status_code}")
+        logger.debug("Login response (truncated): %s", response.text[:1000])
         return response
 
     def get_cookies(self):
         return self.session.cookies.get_dict()
 
     def get_bearer_token(self):
-        return self.get_cookies().get("nauk_at")
+        token = self.get_cookies().get("nauk_at")
+        logger.debug("Bearer token present: %s", bool(token))
+        return token
 
     def fetch_profile_id(self):
         resp = self.session.get(
@@ -83,8 +107,8 @@ class NaukriLoginClient:
 
         if not profile_id:
             raise Exception("Profile ID not found")
-
-        print("Profile ID:", profile_id)
+        logger.info(f"Profile ID: {profile_id}")
+        logger.debug("Profile dashboard payload keys: %s", list(data.keys()))
         return profile_id
 
     def build_required_cookies(self):
@@ -120,7 +144,7 @@ def update_resume() -> dict:
 
     # ---- FILENAME ----
     today = datetime.now()
-    final_filename = filename or f"resume_{today.strftime('%d_%B_%Y').lower()}.pdf"
+    final_filename = f"{filename}_{today.strftime('%d_%B_%Y').lower()}.pdf"
 
     FILE_KEY = "U" + generate_file_key(13)
 
@@ -130,14 +154,17 @@ def update_resume() -> dict:
     try:
         client.login()
     except Exception as e:
+        logger.debug(traceback.format_exc())
         return {"success": False, "error": f"Login failed: {e}"}
 
     token = client.get_bearer_token()
 
     if not token:
+        logger.debug("Bearer token missing after login")
         return {"success": False, "error": "Bearer token missing"}
 
     cookies = client.build_required_cookies()
+    logger.debug("Built cookie keys: %s", list(cookies.keys()))
 
     # ---- DOWNLOAD ----
     drive_url = f"https://drive.google.com/uc?export=download&id={file_id}"
@@ -146,9 +173,11 @@ def update_resume() -> dict:
         res = requests.get(drive_url)
         res.raise_for_status()
     except Exception as e:
+        logger.debug(traceback.format_exc())
         return {"success": False, "error": f"Download failed: {e}"}
 
     if res.content[:4] != b'%PDF':
+        logger.debug("Downloaded file header (first 16 bytes): %s", res.content[:16])
         return {"success": False, "error": "Invalid PDF"}
 
     # ---- UPLOAD ----
@@ -174,15 +203,23 @@ def update_resume() -> dict:
     try:
         upload_resp.raise_for_status()
     except Exception as e:
+        logger.debug("Upload response status: %s", getattr(upload_resp, 'status_code', None))
+        logger.debug(traceback.format_exc())
+        try:
+            logger.debug("Upload response text: %s", upload_resp.text[:1000])
+        except Exception:
+            pass
         return {"success": False, "error": f"Upload failed: {e}"}
 
     # ---- PARSE FILE KEY ----
     try:
         upload_json = upload_resp.json()
+        logger.debug("Upload JSON keys: %s", list(upload_json.keys()) if isinstance(upload_json, dict) else type(upload_json))
         if FILE_KEY not in upload_json:
             FILE_KEY = next(iter(upload_json.keys()))
     except Exception:
-        pass
+        logger.debug("Failed to parse upload response as JSON")
+        logger.debug(traceback.format_exc())
 
     # ---- PROFILE UPDATE ----
     profile_id = client.fetch_profile_id()
@@ -202,6 +239,9 @@ def update_resume() -> dict:
             profile_url,
             headers={
                 "accept": "application/json",
+                    "appid": "105",
+                    "clientid": "d3skt0p",
+                    "systemid": "Naukri",
                 "authorization": f"Bearer {token}",
                 "content-type": "application/json",
                 "origin": "https://www.naukri.com",
@@ -214,8 +254,15 @@ def update_resume() -> dict:
         )
 
         resp.raise_for_status()
+        logger.info("Profile update status: %s", resp.status_code)
+        logger.debug("Profile update response (truncated): %s", resp.text[:1000])
 
     except Exception as e:
+        logger.debug(traceback.format_exc())
+        try:
+            logger.debug("Profile update response text: %s", resp.text)
+        except Exception:
+            pass
         return {"success": False, "error": f"Profile update failed: {e}"}
 
     return {
@@ -227,7 +274,7 @@ def update_resume() -> dict:
 
 # ================== HANDLER ==================
 def handler(event, context):
-    print("Cron job started")
+    logger.info("Cron job started")
 
     return {
         "status": update_resume(),
